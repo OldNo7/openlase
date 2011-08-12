@@ -293,7 +293,10 @@ int clamp(int v)
 	return v;
 }
 
-//int loadild(const char *fname, struct frame *frame)
+/** 
+ * Load the next frame from the fd and fill the *frame structure.
+ * If the frame is already filled with data, the data is deallocated
+ */
 int loadild(FILE *fd, struct frame *frame)
 {
 	int i;
@@ -303,11 +306,14 @@ int loadild(FILE *fd, struct frame *frame)
 	int miny = 65536, maxy = -65536;
 	int minz = 65536, maxz = -65536;
 
+
+    if (frame->points) {
+        free(frame->points);
+    }
 	frame->count = 0;
 	memset(frame, 0, sizeof(struct frame));
 
 	while(1) {
-
 		struct ilda_hdr hdr;
 
 		printf("Reading header at %08x\n", ftell(ild));
@@ -345,25 +351,6 @@ int loadild(FILE *fd, struct frame *frame)
 			frame->count = hdr.count;
 			goto got_frame;
 			break;
-		case 5:
-			printf("Got Type 5 frame, %d points\n", hdr.count);
-			frame->points = malloc(sizeof(struct coord3d) * hdr.count);
-			struct type5coord2d *mtmp2d = malloc(sizeof(struct type5coord2d) * hdr.count);
-			if (fread(mtmp2d, sizeof(struct type5coord2d), hdr.count, ild) != hdr.count) {
-				fprintf(stderr, "error while reading frame\n");
-				return -1;
-			}
-			for(i=0; i<hdr.count; i++) {
-				frame->points[i].x = swapshort(mtmp2d[i].x);
-				frame->points[i].y = swapshort(mtmp2d[i].y);
-				frame->points[i].z = 0;
-				frame->points[i].state = mtmp2d[i].state;
-				frame->points[i].color = (struct color){ mtmp2d[i].r, mtmp2d[i].g, mtmp2d[i].b };
-			}
-			free(mtmp2d);
-			frame->count = hdr.count;
-			goto got_frame;
-			break;
 		case 1:
 			printf("Got 2D frame, %d points\n", hdr.count);
 			frame->points = malloc(sizeof(struct coord3d) * hdr.count);
@@ -390,8 +377,27 @@ int loadild(FILE *fd, struct frame *frame)
 				return -1;
 			}
 			break;
+		case 5:
+			printf("Got Type 5 frame, %d points\n", hdr.count);
+			frame->points = malloc(sizeof(struct coord3d) * hdr.count);
+			struct type5coord2d *mtmp2d = malloc(sizeof(struct type5coord2d) * hdr.count);
+			if (fread(mtmp2d, sizeof(struct type5coord2d), hdr.count, ild) != hdr.count) {
+				fprintf(stderr, "error while reading frame\n");
+				return -1;
+			}
+			for(i=0; i<hdr.count; i++) {
+				frame->points[i].x = swapshort(mtmp2d[i].x);
+				frame->points[i].y = swapshort(mtmp2d[i].y);
+				frame->points[i].z = 0;
+				frame->points[i].state = mtmp2d[i].state;
+				frame->points[i].color = (struct color){ mtmp2d[i].r, mtmp2d[i].g, mtmp2d[i].b };
+			}
+			free(mtmp2d);
+			frame->count = hdr.count;
+			goto got_frame;
+			break;
 		default:
-			printf("Got unknown section %d in file, skipüping %d\n", hdr.format, hdr.count*8);
+			printf("Got unknown section %d in file, skipping %d\n", hdr.format, hdr.count*8);
 			fseek(ild, 8*hdr.count, SEEK_CUR);
 		}
 	}
@@ -487,7 +493,6 @@ int main (int argc, char *argv[])
 	char **argvp = &argv[1];
 	char *fname;
 	jack_client_t *client;
-	struct stat st1, st2;
 
 	if (argc > 2 && !strcmp(argvp[0],"-s")) {
 		scale = 1;
@@ -538,8 +543,6 @@ int main (int argc, char *argv[])
 		return 1;
 	}
 
-	stat(fname, &st1);
-
 	subpos = 0;
 
 	if (jack_activate (client)) {
@@ -548,29 +551,29 @@ int main (int argc, char *argv[])
 	}
 
 	
-	frameno = !frameno;           // switch buffers
+	frameno = !frameno;
 	while (1) {
-		printf("Hello, next frame\n");
-		// Dealloc stuff
-		if(frames[frameno].points)
-			free(frames[frameno].points);
+        int ret;
+
+		printf("----------------------------------------------------\n");
 
 		if (loadild(ild_fd, &frames[frameno]) < 0) {
-			printf("Ouch, broken, ... \n");
-			return 0;
-		}
-		//printf("... again,. got %d points\n", frames[frameno].count);
-		//if (frames[frameno].count == 0) {
-	//		printf("Rewind to beginnning\n");
-	//		fseek(ild_fd,  0, SEEK_SET);
-	//	} else {
-			curframe = &frames[frameno];
-			curdframe = curframe;
-			frameno = !frameno;           // switch buffers
+			printf("Ouch, broken, aborting... \n");
+			return 1;
+        };
 
-			usleep(100000);
-	//	}
+        if (feof(ild_fd)) {
+            printf("Rewind to beginnning\n");
+            clearerr(ild_fd);
+            fseek(ild_fd,  0, SEEK_SET);
+        }
+
+		curframe = &frames[frameno];
+		frameno = !frameno;           // switch buffers
+
+		usleep(100000);
 	}
+
 	jack_client_close (client);
 	exit (0);
 }
