@@ -22,6 +22,9 @@ link_directories (${CMAKE_BINARY_DIR}/libol)
 add_executable(playilda playilda.c)
 target_link_libraries(playilda ${JACK_LIBRARIES})
 
+add_executable(playilda2 playilda2.c)
+target_link_libraries(playilda2 ${JACK_LIBRARIES})
+
 if(FFMPEG_FOUND)
   add_executable(playvid playvid.c)
   target_link_libraries(playvid openlase ${FFMPEG_LIBRARIES})
