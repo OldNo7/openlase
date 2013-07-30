@@ -106,6 +106,15 @@ struct icoord3d {
 	uint8_t color;
 } __attribute__((packed));
 
+struct type5coord2d {
+	int16_t x;
+	int16_t y;
+	uint8_t state;
+	uint8_t b;
+	uint8_t g;
+	uint8_t r;
+} __attribute__((packed));
+
 struct icoord2d {
 	int16_t x;
 	int16_t y;
@@ -284,27 +293,30 @@ int clamp(int v)
 	return v;
 }
 
-int loadild(const char *fname, struct frame *frame)
+/** 
+ * Load the next frame from the fd and fill the *frame structure.
+ * If the frame is already filled with data, the data is deallocated
+ */
+int loadild(FILE *fd, struct frame *frame)
 {
 	int i;
-	FILE *ild = fopen(fname, "rb");
+	FILE *ild = fd;
 
 	int minx = 65536, maxx = -65536;
 	int miny = 65536, maxy = -65536;
 	int minz = 65536, maxz = -65536;
 
-	if (!ild) {
-		fprintf(stderr, "cannot open %s\n", fname);
-		return -1;
-	}
 
+    if (frame->points) {
+        free(frame->points);
+    }
 	frame->count = 0;
 	memset(frame, 0, sizeof(struct frame));
 
-	while(!frame->count) {
-
+	while(1) {
 		struct ilda_hdr hdr;
 
+		printf("Reading header at %08x\n", ftell(ild));
 		if (fread(&hdr, sizeof(hdr), 1, ild) != 1) {
 			fprintf(stderr, "error while reading file\n");
 			return -1;
@@ -337,6 +349,7 @@ int loadild(const char *fname, struct frame *frame)
 			}
 			free(tmp3d);
 			frame->count = hdr.count;
+			goto got_frame;
 			break;
 		case 1:
 			printf("Got 2D frame, %d points\n", hdr.count);
@@ -355,6 +368,7 @@ int loadild(const char *fname, struct frame *frame)
 			}
 			free(tmp2d);
 			frame->count = hdr.count;
+			goto got_frame;
 			break;
 		case 2:
 			printf("Got color palette section, %d entries\n", hdr.count);
@@ -363,11 +377,32 @@ int loadild(const char *fname, struct frame *frame)
 				return -1;
 			}
 			break;
+		case 5:
+			printf("Got Type 5 frame, %d points\n", hdr.count);
+			frame->points = malloc(sizeof(struct coord3d) * hdr.count);
+			struct type5coord2d *mtmp2d = malloc(sizeof(struct type5coord2d) * hdr.count);
+			if (fread(mtmp2d, sizeof(struct type5coord2d), hdr.count, ild) != hdr.count) {
+				fprintf(stderr, "error while reading frame\n");
+				return -1;
+			}
+			for(i=0; i<hdr.count; i++) {
+				frame->points[i].x = swapshort(mtmp2d[i].x);
+				frame->points[i].y = swapshort(mtmp2d[i].y);
+				frame->points[i].z = 0;
+				frame->points[i].state = mtmp2d[i].state;
+				frame->points[i].color = (struct color){ mtmp2d[i].r, mtmp2d[i].g, mtmp2d[i].b };
+			}
+			free(mtmp2d);
+			frame->count = hdr.count;
+			goto got_frame;
+			break;
+		default:
+			printf("Got unknown section %d in file, skipping %d\n", hdr.format, hdr.count*8);
+			fseek(ild, 8*hdr.count, SEEK_CUR);
 		}
 	}
 
-	fclose(ild);
-
+got_frame:
 	if (scale) {
 		for(i=0; i<frame->count; i++) {
 			if(frame->points[i].x > maxx)
@@ -424,8 +459,14 @@ int loadild(const char *fname, struct frame *frame)
 		return -1;
 	}
 
+	if (frame->count == 0)
+	{
+		printf("No points\n");
+		return 0;
+	}
 	int ocount = frame->count * rate / pointrate;
 	struct coord3d *opoints = malloc(sizeof(struct coord3d) * ocount);
+
 
 	float mul = (float)frame->count / (float)ocount;
 
@@ -458,7 +499,6 @@ int main (int argc, char *argv[])
 	char **argvp = &argv[1];
 	char *fname;
 	jack_client_t *client;
-	struct stat st1, st2;
 
 	if (argc > 2 && !strcmp(argvp[0],"-s")) {
 		scale = 1;
@@ -472,10 +512,14 @@ int main (int argc, char *argv[])
 	}
 
 	fname = *argvp;
+	FILE *ild_fd = fopen(fname, "rb");
 
-	if (argc > 2) {
-		pointrate = atoi(argvp[1]);
+	if (!ild_fd) {
+		fprintf(stderr, "cannot open %s\n", fname);
+		return -1;
 	}
+
+	
 
 	if ((client = jack_client_new ("playilda")) == 0) {
 		fprintf (stderr, "jack server not running?\n");
@@ -495,15 +539,19 @@ int main (int argc, char *argv[])
 	out_b = jack_port_register (client, "out_b", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
 	out_w = jack_port_register (client, "out_w", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
 
+	if (argc > 2) {
+		pointrate = atoi(argvp[1]);
+	}
+	else
+		pointrate = rate;
+
 	memset(frames, 0, sizeof(frames));
 
 	curframe = curdframe = &frames[frameno];
-	if (loadild(fname, curframe) < 0)
+	if (loadild(ild_fd, curframe) < 0)
 	{
 		return 1;
 	}
-
-	stat(fname, &st1);
 
 	subpos = 0;
 
@@ -512,20 +560,31 @@ int main (int argc, char *argv[])
 		return 1;
 	}
 
+	
+	frameno = !frameno;
 	while (1) {
-		stat(fname, &st2);
-		if(st1.st_mtime != st2.st_mtime) {
-			frameno = !frameno;
-			printf("Loading new frame to slot %d\n", frameno);
-			if(frames[frameno].points)
-				free(frames[frameno].points);
-			loadild(fname, &frames[frameno]);
-			printf("New frame loaded\n");
-			curframe = &frames[frameno];
-			memcpy(&st1, &st2, sizeof(st1));
-		}
+        int ret;
+
+		printf("----------------------------------------------------\n");
+
+		if (loadild(ild_fd, &frames[frameno]) < 0) {
+			printf("Ouch, broken, aborting... \n");
+			return 1;
+        };
+
+        if (feof(ild_fd) || frames[frameno].count == 0) {
+            printf("Rewind to beginnning\n");
+            clearerr(ild_fd);
+            fseek(ild_fd,  0, SEEK_SET);
+		loadild(ild_fd, &frames[frameno]);
+        }
+
+		curframe = &frames[frameno];
+		frameno = !frameno;           // switch buffers
+
 		usleep(100000);
 	}
+
 	jack_client_close (client);
 	exit (0);
 }
