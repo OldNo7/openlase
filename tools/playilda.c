@@ -459,8 +459,14 @@ got_frame:
 		return -1;
 	}
 
+	if (frame->count == 0)
+	{
+		printf("No points\n");
+		return 0;
+	}
 	int ocount = frame->count * rate / pointrate;
 	struct coord3d *opoints = malloc(sizeof(struct coord3d) * ocount);
+
 
 	float mul = (float)frame->count / (float)ocount;
 
@@ -513,9 +519,7 @@ int main (int argc, char *argv[])
 		return -1;
 	}
 
-	if (argc > 2) {
-		pointrate = atoi(argvp[1]);
-	}
+	
 
 	if ((client = jack_client_new ("playilda")) == 0) {
 		fprintf (stderr, "jack server not running?\n");
@@ -534,6 +538,12 @@ int main (int argc, char *argv[])
 	out_g = jack_port_register (client, "out_g", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
 	out_b = jack_port_register (client, "out_b", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
 	out_w = jack_port_register (client, "out_w", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+
+	if (argc > 2) {
+		pointrate = atoi(argvp[1]);
+	}
+	else
+		pointrate = rate;
 
 	memset(frames, 0, sizeof(frames));
 
@@ -562,10 +572,11 @@ int main (int argc, char *argv[])
 			return 1;
         };
 
-        if (feof(ild_fd)) {
+        if (feof(ild_fd) || frames[frameno].count == 0) {
             printf("Rewind to beginnning\n");
             clearerr(ild_fd);
             fseek(ild_fd,  0, SEEK_SET);
+		loadild(ild_fd, &frames[frameno]);
         }
 
 		curframe = &frames[frameno];
